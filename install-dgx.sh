@@ -231,13 +231,11 @@ info "Credentials saved to $CREDS_FILE"
 if [[ "$TAILSCALE_HTTPS" == "true" ]]; then
   info "Configuring tailscale serve (https → localhost:${TREK_PORT})..."
 
-  # Clear ALL existing serve rules before (re)configuring.
-  # 'tailscale serve reset' is the only reliable cross-version way to remove
-  # a listener; the per-port 'off' flag doesn't work on all 1.x releases.
-  if sudo tailscale serve status 2>/dev/null | grep -q "443/TCP"; then
-    warn "Existing tailscale serve rule on 443 found — resetting all serve config."
-    sudo tailscale serve reset
-  fi
+  # Always reset all serve rules before configuring — the safest cross-version
+  # approach. Conditional checks on 'serve status' output are unreliable
+  # because the format differs across Tailscale 1.x releases.
+  warn "Resetting existing tailscale serve config before applying new rule..."
+  sudo tailscale serve reset 2>/dev/null || true
 
   # Proxy all HTTPS traffic on the Tailscale interface to localhost:TREK_PORT.
   # tailscaled handles cert issuance/renewal automatically via LetsEncrypt.
