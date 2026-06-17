@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# TREK installer for NVIDIA DGX Spark (aarch64 / arm64)
+# TREK installer for NVIDIA DGX Spark (aarch64 / arm64) — Tailscale edition
 # Tested on: Ubuntu 22.04+ / Linux 6.17.0-1021-nvidia aarch64
+#
+# Access method: Tailscale serve (automatic HTTPS via Tailscale certs)
+#   - TREK listens on localhost:3000 (not exposed to LAN)
+#   - tailscale serve terminates TLS → proxies to localhost:3000
+#   - You reach TREK at https://<machine>.ts.net (full HTTPS, no cert work)
+#   - COOKIE_SECURE stays true → no "Access token required" ever
 #
 # Usage:
 #   chmod +x install-dgx.sh
 #   ./install-dgx.sh
 #
-# To customise before running, export any of these variables:
-#   TREK_PORT        (default 3000)
+# Customise via environment variables before running:
+#   TREK_PORT        (default 3000  — only used on localhost, not exposed)
 #   TREK_DIR         (default ~/trek)
 #   ADMIN_EMAIL      (default admin@trek.local)
 #   ADMIN_PASSWORD   (default: random 16-char, printed once)
@@ -27,92 +33,127 @@ error()   { echo -e "${RED}[trek]${NC} $*" >&2; exit 1; }
 ###############################################################################
 # 1. Preflight checks
 ###############################################################################
-info "=== TREK DGX Spark installer ==="
+info "=== TREK DGX Spark installer (Tailscale edition) ==="
 
-# Architecture check
 ARCH=$(uname -m)
 if [[ "$ARCH" != "aarch64" && "$ARCH" != "arm64" ]]; then
-  warn "Expected aarch64/arm64 but got: $ARCH — proceeding anyway."
+  warn "Expected aarch64/arm64, got: $ARCH — proceeding anyway."
 fi
 info "Architecture: $ARCH"
 
-# Docker check
+# Docker
 if ! command -v docker &>/dev/null; then
-  error "Docker not found. Install Docker Engine (arm64) first:\n  https://docs.docker.com/engine/install/ubuntu/"
+  error "Docker not found. Install Docker Engine (arm64):\n  https://docs.docker.com/engine/install/ubuntu/"
 fi
-DOCKER_VERSION=$(docker --version)
-info "Docker: $DOCKER_VERSION"
-
-# Docker daemon running?
+info "Docker: $(docker --version)"
 if ! docker info &>/dev/null; then
-  error "Docker daemon is not running. Start it with:\n  sudo systemctl start docker"
+  error "Docker daemon is not running.\n  sudo systemctl start docker"
 fi
 
-# Docker Compose: prefer the 'docker compose' plugin, fall back to standalone
+# Docker Compose
 if docker compose version &>/dev/null 2>&1; then
   COMPOSE="docker compose"
 elif command -v docker-compose &>/dev/null; then
   COMPOSE="docker-compose"
 else
-  error "Docker Compose not found.\n  Install via: sudo apt-get install docker-compose-plugin\n  or: sudo apt-get install docker-compose"
+  error "Docker Compose not found.\n  sudo apt-get install docker-compose-plugin"
 fi
-info "Compose command: $COMPOSE"
+info "Compose: $COMPOSE"
+
+# Tailscale
+if ! command -v tailscale &>/dev/null; then
+  error "Tailscale not found. Install it:\n  curl -fsSL https://tailscale.com/install.sh | sh\n  sudo tailscale up"
+fi
+if ! tailscale status &>/dev/null; then
+  error "Tailscale is not connected. Run:\n  sudo tailscale up"
+fi
+info "Tailscale: $(tailscale version | head -1)"
 
 ###############################################################################
-# 2. Configuration
+# 2. Detect Tailscale hostname
+###############################################################################
+# tailscale status --json gives the MagicDNS FQDN (e.g. mymachine.tail1234.ts.net)
+TS_HOSTNAME=$(tailscale status --json 2>/dev/null \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['Self']['DNSName'].rstrip('.'))" \
+  2>/dev/null || true)
+
+if [[ -z "$TS_HOSTNAME" ]]; then
+  # Fallback: use the Tailscale IP
+  TS_HOSTNAME=$(tailscale ip -4 2>/dev/null | head -1 || true)
+  TS_URL="http://${TS_HOSTNAME}:${TREK_PORT:-3000}"
+  TAILSCALE_HTTPS=false
+  warn "Could not determine MagicDNS hostname — falling back to Tailscale IP: $TS_HOSTNAME"
+  warn "HTTPS via tailscale serve won't be configured. Set COOKIE_SECURE=false is needed."
+else
+  TS_URL="https://${TS_HOSTNAME}"
+  TAILSCALE_HTTPS=true
+  info "Tailscale hostname: $TS_HOSTNAME"
+  info "App URL will be  : $TS_URL"
+fi
+
+###############################################################################
+# 3. Configuration
 ###############################################################################
 TREK_PORT="${TREK_PORT:-3000}"
 TREK_DIR="${TREK_DIR:-$HOME/trek}"
 
-# Timezone — auto-detect from /etc/timezone, fall back to UTC
 if [[ -z "${TZ:-}" ]]; then
-  if [[ -f /etc/timezone ]]; then
-    TZ=$(cat /etc/timezone)
-  else
-    TZ="UTC"
-  fi
+  TZ=$(cat /etc/timezone 2>/dev/null || echo "UTC")
 fi
 
-# Admin credentials
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@trek.local}"
 if [[ -z "${ADMIN_PASSWORD:-}" ]]; then
-  # Generate a random 16-char password (no ambiguous chars)
   ADMIN_PASSWORD=$(tr -dc 'A-Za-z0-9!@#$%^&*' </dev/urandom | head -c 16 || true)
   GENERATED_PASSWORD=true
 else
   GENERATED_PASSWORD=false
 fi
 
-# Encryption key — 32 random bytes as hex (64 hex chars)
 ENCRYPTION_KEY=$(openssl rand -hex 32)
 
 info "Install directory : $TREK_DIR"
-info "Port              : $TREK_PORT"
+info "Internal port     : $TREK_PORT  (localhost only)"
 info "Timezone          : $TZ"
 info "Admin email       : $ADMIN_EMAIL"
 
 ###############################################################################
-# 3. Create directory structure
+# 4. Create directory structure
 ###############################################################################
 info "Creating data directories..."
-mkdir -p "$TREK_DIR/data"
-mkdir -p "$TREK_DIR/uploads"
+mkdir -p "$TREK_DIR/data" "$TREK_DIR/uploads"
 
 ###############################################################################
-# 4. Write docker-compose.yml
+# 5. Write docker-compose.yml
 ###############################################################################
 info "Writing docker-compose.yml..."
+
+if [[ "$TAILSCALE_HTTPS" == "true" ]]; then
+  # Bind only to localhost — Tailscale serve proxies in from outside.
+  # Full HTTPS: COOKIE_SECURE can be true, FORCE_HTTPS off (TS handles it),
+  # TRUST_PROXY=1 so Express reads X-Forwarded-For/Proto from tailscaled.
+  COOKIE_SECURE_VAL="true"
+  FORCE_HTTPS_VAL="false"
+  PORT_BINDING="127.0.0.1:${TREK_PORT}:3000"
+  APP_URL_LINE="APP_URL: \"${TS_URL}\""
+  COOKIE_SECURE_COMMENT="# HTTPS via tailscale serve — Secure cookie is safe"
+else
+  COOKIE_SECURE_VAL="false"
+  FORCE_HTTPS_VAL="false"
+  PORT_BINDING="${TREK_PORT}:3000"
+  APP_URL_LINE="# APP_URL: \"${TS_URL}\""
+  COOKIE_SECURE_COMMENT="# No HTTPS detected — Secure flag disabled to prevent AUTH_REQUIRED"
+fi
+
 cat > "$TREK_DIR/docker-compose.yml" <<EOF
 services:
   trek:
     image: mauriceboe/trek:latest
-    # mauriceboe/trek is a multi-arch manifest (linux/amd64 + linux/arm64).
-    # Docker on aarch64 automatically pulls the arm64 layer.
+    # Multi-arch manifest: Docker on aarch64 pulls the linux/arm64 layer.
     platform: linux/arm64
     container_name: trek
     restart: unless-stopped
     ports:
-      - "${TREK_PORT}:3000"
+      - "${PORT_BINDING}"
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
@@ -120,13 +161,20 @@ services:
       # ── Security ──────────────────────────────────────────────────────────
       ENCRYPTION_KEY: "${ENCRYPTION_KEY}"
 
-      # COOKIE_SECURE=false is REQUIRED when accessing TREK over plain HTTP
-      # (no TLS / no reverse proxy). Without this the browser drops the session
-      # cookie and every authenticated request returns "Access token required".
-      # Change to 'true' (or remove) once you add HTTPS / a reverse proxy.
-      COOKIE_SECURE: "false"
+      ${COOKIE_SECURE_COMMENT}
+      COOKIE_SECURE: "${COOKIE_SECURE_VAL}"
 
-      # ── First-boot admin account (only used on the very first start) ──────
+      # tailscale serve terminates TLS and forwards X-Forwarded-Proto: https.
+      # TRUST_PROXY=1 tells Express to trust that header for rate limiting
+      # and audit logs. FORCE_HTTPS is off because tailscaled enforces HTTPS
+      # before the request ever reaches the container.
+      TRUST_PROXY: "1"
+      FORCE_HTTPS: "${FORCE_HTTPS_VAL}"
+
+      # ── Public URL (required for MCP OAuth, OIDC, email links) ────────────
+      ${APP_URL_LINE}
+
+      # ── First-boot admin account (used only on the very first start) ──────
       ADMIN_EMAIL: "${ADMIN_EMAIL}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
 
@@ -134,12 +182,6 @@ services:
       TZ: "${TZ}"
       NODE_ENV: "production"
       LOG_LEVEL: "info"
-
-      # APP_URL is optional for plain LAN access but required if you later
-      # enable OIDC or the MCP integration. Set it to the URL you use in
-      # your browser, e.g.:
-      #   APP_URL: "http://192.168.1.x:${TREK_PORT}"
-      # APP_URL: ""
 
       # ── Optional integrations (uncomment to enable) ───────────────────────
       # OPENWEATHER_API_KEY: ""
@@ -151,14 +193,12 @@ services:
       # SMTP_FROM: ""
       # SMTP_SECURE: "false"
 
-    # Minimal capability set — gosu handles the root→node drop internally
     cap_drop:
       - ALL
     cap_add:
       - CHOWN
       - SETUID
       - SETGID
-    # /tmp is writable but non-executable
     tmpfs:
       - /tmp:noexec,nosuid,size=128m
     healthcheck:
@@ -172,79 +212,100 @@ EOF
 success "docker-compose.yml written."
 
 ###############################################################################
-# 5. Save credentials to a local file (chmod 600)
+# 6. Save credentials (mode 600)
 ###############################################################################
 CREDS_FILE="$TREK_DIR/.trek-credentials"
 cat > "$CREDS_FILE" <<EOF
-# TREK credentials — keep this file safe, do not commit it
+# TREK credentials — do not commit this file
 ADMIN_EMAIL=${ADMIN_EMAIL}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
 ENCRYPTION_KEY=${ENCRYPTION_KEY}
+TAILSCALE_URL=${TS_URL}
 EOF
 chmod 600 "$CREDS_FILE"
-info "Credentials saved to $CREDS_FILE (mode 600)"
+info "Credentials saved to $CREDS_FILE"
 
 ###############################################################################
-# 6. Pull image
+# 7. Configure tailscale serve (HTTPS → localhost:TREK_PORT)
+###############################################################################
+if [[ "$TAILSCALE_HTTPS" == "true" ]]; then
+  info "Configuring tailscale serve (https → localhost:${TREK_PORT})..."
+
+  # Remove any existing rule on port 443 for a clean slate
+  tailscale serve https:443 off 2>/dev/null || true
+
+  # Proxy all HTTPS traffic on the Tailscale interface to localhost:TREK_PORT.
+  # tailscaled handles cert issuance/renewal automatically via LetsEncrypt.
+  sudo tailscale serve --https=443 --set-path=/ "http://localhost:${TREK_PORT}"
+
+  # Persist the serve config so it survives reboots
+  # (tailscale serve state is stored in /var/lib/tailscale/ automatically)
+
+  success "tailscale serve configured: https://${TS_HOSTNAME} → localhost:${TREK_PORT}"
+fi
+
+###############################################################################
+# 8. Pull image
 ###############################################################################
 info "Pulling Docker image (arm64)..."
 docker pull --platform linux/arm64 mauriceboe/trek:latest
 
 ###############################################################################
-# 7. Start the container
+# 9. Start TREK
 ###############################################################################
 info "Starting TREK..."
 cd "$TREK_DIR"
 $COMPOSE up -d
 
 ###############################################################################
-# 8. Wait for health check
+# 10. Wait for healthy
 ###############################################################################
 info "Waiting for TREK to become healthy (up to 90 s)..."
 HEALTHY=false
 for i in $(seq 1 18); do
   STATUS=$(docker inspect trek --format '{{.State.Health.Status}}' 2>/dev/null || echo "starting")
   if [[ "$STATUS" == "healthy" ]]; then
-    HEALTHY=true
-    break
+    HEALTHY=true; break
   fi
-  echo -n "."
-  sleep 5
+  echo -n "."; sleep 5
 done
 echo ""
 
 if [[ "$HEALTHY" == "true" ]]; then
   success "TREK is healthy!"
 else
-  warn "Health check did not pass within 90 s. Check logs:"
-  warn "  docker logs trek"
+  warn "Health check timed out. Check logs:  docker logs trek"
 fi
 
 ###############################################################################
-# 9. Summary
+# 11. Summary
 ###############################################################################
-HOST_IP=$(hostname -I | awk '{print $1}' 2>/dev/null || echo "<your-ip>")
-
 echo ""
 echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  TREK is running!${NC}"
 echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
 echo ""
-echo -e "  URL          : ${CYAN}http://${HOST_IP}:${TREK_PORT}${NC}"
-echo -e "  Admin email  : ${CYAN}${ADMIN_EMAIL}${NC}"
+echo -e "  URL (Tailscale) : ${CYAN}${TS_URL}${NC}"
+echo -e "  Admin email     : ${CYAN}${ADMIN_EMAIL}${NC}"
 if [[ "$GENERATED_PASSWORD" == "true" ]]; then
-echo -e "  Admin pass   : ${YELLOW}${ADMIN_PASSWORD}${NC}  ← SAVE THIS"
+echo -e "  Admin password  : ${YELLOW}${ADMIN_PASSWORD}${NC}  ← SAVE THIS"
 fi
 echo ""
-echo -e "  Credentials  : ${TREK_DIR}/.trek-credentials"
-echo -e "  Compose file : ${TREK_DIR}/docker-compose.yml"
+echo -e "  Credentials file: ${TREK_DIR}/.trek-credentials"
+echo -e "  Compose file    : ${TREK_DIR}/docker-compose.yml"
 echo ""
 echo "  Useful commands:"
-echo "    docker logs -f trek           # live logs"
-echo "    cd $TREK_DIR && $COMPOSE down  # stop"
-echo "    cd $TREK_DIR && $COMPOSE pull && $COMPOSE up -d  # update"
+echo "    docker logs -f trek                                    # live logs"
+echo "    cd $TREK_DIR && $COMPOSE down                         # stop"
+echo "    cd $TREK_DIR && $COMPOSE pull && $COMPOSE up -d       # update"
+echo "    tailscale serve status                                 # verify proxy"
 echo ""
-echo -e "${YELLOW}  NOTE: COOKIE_SECURE=false is set so the session cookie${NC}"
-echo -e "${YELLOW}  works over plain HTTP. If you add HTTPS later, remove${NC}"
-echo -e "${YELLOW}  that env var (or set it to true) and restart.${NC}"
+if [[ "$TAILSCALE_HTTPS" == "true" ]]; then
+echo -e "${GREEN}  HTTPS is active via tailscale serve.${NC}"
+echo -e "${GREEN}  Session cookies are fully secure — no workarounds needed.${NC}"
+else
+echo -e "${YELLOW}  MagicDNS not detected — running over plain Tailscale IP.${NC}"
+echo -e "${YELLOW}  COOKIE_SECURE=false is set to prevent AUTH_REQUIRED errors.${NC}"
+echo -e "${YELLOW}  Enable MagicDNS in the Tailscale admin console to get HTTPS.${NC}"
+fi
 echo ""
