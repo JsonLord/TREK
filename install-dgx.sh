@@ -94,7 +94,7 @@ fi
 ###############################################################################
 # 3. Configuration
 ###############################################################################
-TREK_PORT="${TREK_PORT:-3000}"
+TREK_PORT="${TREK_PORT:-3001}"
 TREK_DIR="${TREK_DIR:-$HOME/trek}"
 
 if [[ -z "${TZ:-}" ]]; then
@@ -245,20 +245,36 @@ if [[ "$TAILSCALE_HTTPS" == "true" ]]; then
 fi
 
 ###############################################################################
-# 8. Pull image
+# 8. Kill any Docker containers already using port TREK_PORT
+###############################################################################
+info "Checking for containers on port ${TREK_PORT}..."
+BLOCKING=$(docker ps --format '{{.ID}} {{.Ports}}' \
+  | grep -E "(0\.0\.0\.0|127\.0\.0\.1|::):${TREK_PORT}->" \
+  | awk '{print $1}' || true)
+
+if [[ -n "$BLOCKING" ]]; then
+  warn "Stopping containers using port ${TREK_PORT}: $BLOCKING"
+  docker rm -f $BLOCKING
+  success "Cleared."
+else
+  info "Port ${TREK_PORT} is free."
+fi
+
+###############################################################################
+# 9. Pull image
 ###############################################################################
 info "Pulling Docker image (arm64)..."
 docker pull --platform linux/arm64 mauriceboe/trek:latest
 
 ###############################################################################
-# 9. Start TREK
+# 10. Start TREK
 ###############################################################################
 info "Starting TREK..."
 cd "$TREK_DIR"
 $COMPOSE up -d
 
 ###############################################################################
-# 10. Wait for healthy
+# 11. Wait for healthy
 ###############################################################################
 info "Waiting for TREK to become healthy (up to 90 s)..."
 HEALTHY=false
@@ -278,7 +294,7 @@ else
 fi
 
 ###############################################################################
-# 11. Summary
+# 12. Summary
 ###############################################################################
 echo ""
 echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
