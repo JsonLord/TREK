@@ -80,7 +80,7 @@ TS_HOSTNAME=$(tailscale status --json 2>/dev/null \
 if [[ -z "$TS_HOSTNAME" ]]; then
   # Fallback: use the Tailscale IP
   TS_HOSTNAME=$(tailscale ip -4 2>/dev/null | head -1 || true)
-  TS_URL="http://${TS_HOSTNAME}:${TREK_PORT:-3000}"
+  TS_URL="http://${TS_HOSTNAME}:${TREK_PORT:-3001}"
   TAILSCALE_HTTPS=false
   warn "Could not determine MagicDNS hostname — falling back to Tailscale IP: $TS_HOSTNAME"
   warn "HTTPS via tailscale serve won't be configured. Set COOKIE_SECURE=false is needed."
@@ -231,13 +231,13 @@ info "Credentials saved to $CREDS_FILE"
 if [[ "$TAILSCALE_HTTPS" == "true" ]]; then
   info "Configuring tailscale serve (https → localhost:${TREK_PORT})..."
 
-  # Remove any existing listener on 443 before (re)configuring.
-  # tailscale serve uses different syntaxes depending on version:
-  #   newer: tailscale serve --https=443 off
-  #   older: tailscale serve --remove https:443
-  # Try both; ignore errors — the next set command will fail loudly if needed.
-  sudo tailscale serve --https=443 off 2>/dev/null || true
-  sudo tailscale serve --remove https:443 2>/dev/null || true
+  # Clear ALL existing serve rules before (re)configuring.
+  # 'tailscale serve reset' is the only reliable cross-version way to remove
+  # a listener; the per-port 'off' flag doesn't work on all 1.x releases.
+  if sudo tailscale serve status 2>/dev/null | grep -q "443/TCP"; then
+    warn "Existing tailscale serve rule on 443 found — resetting all serve config."
+    sudo tailscale serve reset
+  fi
 
   # Proxy all HTTPS traffic on the Tailscale interface to localhost:TREK_PORT.
   # tailscaled handles cert issuance/renewal automatically via LetsEncrypt.
