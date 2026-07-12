@@ -51,7 +51,7 @@ COPY server/package.json ./server/
 #   amd64 — static binary from KDE CDN (glibc 2.17+; wget stays for healthcheck)
 #   arm64 — apt package (KDE publishes no arm64 static binary)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends tzdata dumb-init wget ca-certificates python3 build-essential && \
+    apt-get install -y --no-install-recommends tzdata dumb-init wget ca-certificates python3 build-essential git && \
     npm ci --workspace=server --omit=dev && \
     ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "amd64" ]; then \

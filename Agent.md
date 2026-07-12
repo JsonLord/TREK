@@ -20,6 +20,12 @@ Choose the correct SDK based on the app type based on the codebase language:
 - Never hardcode the token. Always read it from the environment.
 - All monitoring and log‑streaming commands rely on `HF_TOKEN`.
 
+### GitHub Sync (Persistence)
+- The environment variable **`PAT_TOKEN`** must be set with a GitHub Personal Access Token.
+- This token is used to sync the internal SQLite database (`travel.db`) to `https://github.com/JsonLord/TREK.git` on the `custom-data` branch.
+- Sync runs on startup and every 6 hours.
+- If the branch does not exist, the service will create it.
+
 ### Required Files
 - `Dockerfile` (or `app.py` for Gradio/Streamlit SDKs)
 - `README.md` with Hugging Face YAML frontmatter:

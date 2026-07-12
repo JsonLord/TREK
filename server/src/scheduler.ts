@@ -142,6 +142,10 @@ let demoTask: ScheduledTask | null = null;
 function startDemoReset(): void {
   if (demoTask) { demoTask.stop(); demoTask = null; }
   if (process.env.DEMO_MODE?.toLowerCase() !== 'true') return;
+  if (process.env.DISABLE_DEMO_RESET?.toLowerCase() === 'true') {
+    logInfo('Demo reset: DISABLED via DISABLE_DEMO_RESET');
+    return;
+  }
 
   demoTask = cron.schedule('0 * * * *', () => {
     try {
@@ -408,6 +412,33 @@ function startAirTrailSync(): void {
   }, { timezone: tz });
 }
 
+// GitHub sync: periodically push the database to GitHub
+let githubSyncTask: ScheduledTask | null = null;
+
+function startGithubSync(): void {
+  if (githubSyncTask) { githubSyncTask.stop(); githubSyncTask = null; }
+  if (!process.env.PAT_TOKEN) {
+    logInfo('GitHub Sync disabled (PAT_TOKEN not set)');
+    return;
+  }
+
+  const tz = process.env.TZ || 'UTC';
+  // Run every 6 hours
+  githubSyncTask = cron.schedule('0 */6 * * *', async () => {
+    try {
+      const { runGithubSync } = require('./services/githubSyncService');
+      await runGithubSync();
+    } catch (err: unknown) {
+      logError(`GitHub Sync tick failed: ${err instanceof Error ? err.message : err}`);
+    }
+  }, { timezone: tz });
+  logInfo('GitHub Sync scheduled (every 6 hours)');
+
+  // Also run once on startup
+  const { runGithubSync } = require('./services/githubSyncService');
+  runGithubSync().catch(err => logError(`Initial GitHub Sync failed: ${err.message}`));
+}
+
 function stop(): void {
   if (currentTask) { currentTask.stop(); currentTask = null; }
   if (demoTask) { demoTask.stop(); demoTask = null; }
@@ -417,6 +448,7 @@ function stop(): void {
   if (trekPhotoCacheTask) { trekPhotoCacheTask.stop(); trekPhotoCacheTask = null; }
   if (placePhotoCacheTask) { placePhotoCacheTask.stop(); placePhotoCacheTask = null; }
   if (airtrailSyncTask) { airtrailSyncTask.stop(); airtrailSyncTask = null; }
+  if (githubSyncTask) { githubSyncTask.stop(); githubSyncTask = null; }
 }
 
-export { start, stop, startDemoReset, startTripReminders, startTodoReminders, startVersionCheck, startIdempotencyCleanup, purgeExpiredIdempotencyKeys, startTrekPhotoCacheCleanup, startPlacePhotoCacheCleanup, startAirTrailSync, loadSettings, saveSettings, VALID_INTERVALS };
+export { start, stop, startDemoReset, startTripReminders, startTodoReminders, startVersionCheck, startIdempotencyCleanup, purgeExpiredIdempotencyKeys, startTrekPhotoCacheCleanup, startPlacePhotoCacheCleanup, startAirTrailSync, startGithubSync, loadSettings, saveSettings, VALID_INTERVALS };
