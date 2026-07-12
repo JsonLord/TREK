@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ExpressAdapter } from '@nestjs/platform-express';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { INestApplication } from '@nestjs/common';
 import { AppModule } from './nest/app.module';
 import { applyGlobalMiddleware } from './middleware/globalMiddleware';
@@ -40,6 +41,15 @@ export async function buildApp(): Promise<INestApplication> {
   applyPlatformUploads(instance);
   applyPlatformTransport(instance);
   applyPlatformStatic(instance);
+
+  const config = new DocumentBuilder()
+    .setTitle('TREK API')
+    .setDescription('The TREK API documentation')
+    .setVersion('1.0')
+    .build();
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api-docs', app, document);
+
   await app.init();
   return app;
 }

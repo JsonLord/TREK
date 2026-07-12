@@ -1,3 +1,9 @@
+---
+title: trek
+sdk: docker
+app_port: 7860
+---
+
 <div align="center">
 
 <picture>
@@ -455,4 +461,3 @@ for full third-party attributions.
 ## License
 
 TREK is [AGPL v3](LICENSE). Self-host freely for personal or internal company use. If you modify and offer TREK as a network service to third parties, your modifications must be open-sourced under the same licence.
-
