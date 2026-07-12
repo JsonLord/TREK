@@ -22,7 +22,7 @@ const tmpDir = path.join(__dirname, '../data/tmp');
 import * as scheduler from './scheduler';
 import { getAppUrl, getMcpSafeUrl } from './services/notifications';
 
-const PORT = Number(process.env.PORT) || 3001;
+const PORT = Number(process.env.PORT) || 7860;
 const HOST = process.env.HOST;
 const APP_VERSION: string = process.env.APP_VERSION || (require('../package.json') as { version: string }).version;
 

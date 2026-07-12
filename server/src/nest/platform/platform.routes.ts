@@ -112,6 +112,7 @@ export function applyPlatformUploads(app: express.Application): void {
  * same as when they were function-local inside createApp.
  */
 export function applyPlatformTransport(app: express.Application): void {
+  app.get('/health', (_req: Request, res: Response) => res.status(200).send('OK'));
   app.get('/api/health', (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store, must-revalidate')
     res.json({ status: 'ok' })
